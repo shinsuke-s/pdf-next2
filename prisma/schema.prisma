@@ -1,0 +1,20 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Annotation {
+  id        Int      @id @default(autoincrement())
+  page      Int
+  x         Float
+  y         Float
+  value     Float
+  unit      String
+  category  String
+  comment   String
+  createdAt DateTime @default(now())
+}
