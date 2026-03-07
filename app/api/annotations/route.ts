@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { ensureAnnotationTable, prisma } from '@/lib/prisma';
 import { CATEGORY_OPTIONS, UNIT_OPTIONS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  await ensureAnnotationTable();
+
   const annotations = await prisma.annotation.findMany({
     orderBy: [{ createdAt: 'asc' }]
   });
@@ -16,6 +18,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  await ensureAnnotationTable();
+
   try {
     const body = await request.json();
     const page = Number(body.page);
@@ -55,7 +59,11 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json(annotation, { status: 201 });
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    }
+
+    return NextResponse.json({ error: 'Failed to save annotation' }, { status: 500 });
   }
 }

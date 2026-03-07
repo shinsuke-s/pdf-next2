@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { ensureAnnotationTable, prisma } from '@/lib/prisma';
 import { CATEGORY_OPTIONS, UNIT_OPTIONS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
@@ -11,6 +11,8 @@ type RouteContext = {
 };
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  await ensureAnnotationTable();
+
   const { id: idParam } = await context.params;
   const id = Number(idParam);
   if (!Number.isInteger(id) || id < 1) {
@@ -67,6 +69,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 }
 
 export async function DELETE(_request: NextRequest, context: RouteContext) {
+  await ensureAnnotationTable();
+
   const { id: idParam } = await context.params;
   const id = Number(idParam);
   if (!Number.isInteger(id) || id < 1) {
