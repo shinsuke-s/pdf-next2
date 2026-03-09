@@ -27,6 +27,8 @@ export async function ensureAnnotationTable() {
         "page" INTEGER NOT NULL,
         "x" REAL NOT NULL,
         "y" REAL NOT NULL,
+        "mode" TEXT NOT NULL DEFAULT 'point',
+        "points" TEXT,
         "value" REAL NOT NULL,
         "unit" TEXT NOT NULL,
         "category" TEXT NOT NULL,
@@ -34,6 +36,18 @@ export async function ensureAnnotationTable() {
         "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Annotation" ADD COLUMN "mode" TEXT NOT NULL DEFAULT 'point'`);
+    } catch {
+      // Already exists
+    }
+
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Annotation" ADD COLUMN "points" TEXT`);
+    } catch {
+      // Already exists
+    }
   })();
 
   try {

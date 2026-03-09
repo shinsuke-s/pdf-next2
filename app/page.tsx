@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATEGORY_COLORS, CATEGORY_OPTIONS, UNIT_OPTIONS, type Category, type Unit } from '@/lib/constants';
 
 type Annotation = {
@@ -9,12 +9,17 @@ type Annotation = {
   page: number;
   x: number;
   y: number;
+  mode?: string;
+  points?: string | null;
   value: number;
   unit: string;
   category: string;
   comment: string;
   createdAt: string;
 };
+
+type DrawMode = 'point' | 'pen';
+type StrokePoint = { x: number; y: number };
 
 type SelectedPoint = {
   page: number;
@@ -49,6 +54,56 @@ const getCategoryColor = (category: string): string => {
   return CATEGORY_COLORS[category as Category] ?? '#64748b';
 };
 
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+const parseStrokePoints = (raw: string | null | undefined): StrokePoint[] => {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const json = JSON.parse(raw) as unknown;
+    if (!Array.isArray(json)) {
+      return [];
+    }
+
+    return json
+      .map((item) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+        const x = Number((item as { x?: unknown }).x);
+        const y = Number((item as { y?: unknown }).y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return null;
+        }
+        return { x: clamp01(x), y: clamp01(y) };
+      })
+      .filter((item): item is StrokePoint => item !== null);
+  } catch {
+    return [];
+  }
+};
+
+const getStrokeCenter = (points: StrokePoint[]): StrokePoint | null => {
+  if (points.length === 0) {
+    return null;
+  }
+
+  const sum = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }),
+    { x: 0, y: 0 }
+  );
+  return { x: sum.x / points.length, y: sum.y / points.length };
+};
+
+const getStrokeLastPoint = (points: StrokePoint[]): StrokePoint | null => {
+  if (points.length === 0) {
+    return null;
+  }
+  return points[points.length - 1];
+};
+
 const ensurePromiseWithResolversPolyfill = () => {
   const promiseCtor = Promise as PromiseConstructor;
   const withResolvers = (promiseCtor as any).withResolvers as undefined | (() => unknown);
@@ -68,14 +123,41 @@ const ensurePromiseWithResolversPolyfill = () => {
   }
 };
 
+const MemoizedPdfLayer = memo(function MemoizedPdfLayer({
+  isPdfReady,
+  pdfWidth,
+  onLoadSuccess
+}: {
+  isPdfReady: boolean;
+  pdfWidth: number;
+  onLoadSuccess: (page: any) => void;
+}) {
+  if (!isPdfReady) {
+    return <p className="text-sm text-slate-600">PDFライブラリを初期化中...</p>;
+  }
+
+  return (
+    <PdfDocument
+      file={PDF_FILE}
+      loading={<p className="text-sm text-slate-600">PDFを読み込み中...</p>}
+      error={<p className="text-sm text-rose-600">PDFの読み込みに失敗しました。</p>}
+    >
+      <PdfPage pageNumber={1} width={pdfWidth} renderAnnotationLayer={false} renderTextLayer={false} onLoadSuccess={onLoadSuccess} />
+    </PdfDocument>
+  );
+});
+
 export default function HomePage() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const isPenDrawingRef = useRef(false);
   const [pdfWidth, setPdfWidth] = useState(860);
   const [baseSize, setBaseSize] = useState<{ width: number; height: number } | null>(null);
   const [isPdfReady, setIsPdfReady] = useState(false);
 
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [drawMode, setDrawMode] = useState<DrawMode>('point');
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
+  const [draftStroke, setDraftStroke] = useState<StrokePoint[]>([]);
   const [editingAnnotationId, setEditingAnnotationId] = useState<number | null>(null);
 
   const [category, setCategory] = useState<Category>(CATEGORY_OPTIONS[0]);
@@ -90,8 +172,18 @@ export default function HomePage() {
 
   const pdfHeight = useMemo(() => {
     if (!baseSize) return 640;
-    return (baseSize.height / baseSize.width) * pdfWidth;
+    return Math.round((baseSize.height / baseSize.width) * pdfWidth);
   }, [baseSize, pdfWidth]);
+
+  const handlePdfPageLoadSuccess = useCallback((page: any) => {
+    const viewport = page.getViewport({ scale: 1 });
+    setBaseSize((prev) => {
+      if (prev && prev.width === viewport.width && prev.height === viewport.height) {
+        return prev;
+      }
+      return { width: viewport.width, height: viewport.height };
+    });
+  }, []);
 
   const selectedCategoryColor = useMemo(() => getCategoryColor(category), [category]);
   const isEditMode = editingAnnotationId !== null;
@@ -124,9 +216,21 @@ export default function HomePage() {
       .sort((a, b) => a.category.localeCompare(b.category, 'ja'));
   }, [annotations]);
 
+  const savedStrokes = useMemo(() => {
+    return annotations
+      .filter((item) => item.mode === 'stroke')
+      .map((item) => ({
+        id: item.id,
+        category: item.category,
+        points: parseStrokePoints(item.points)
+      }))
+      .filter((item) => item.points.length >= 2);
+  }, [annotations]);
+
   const resetForm = useCallback(() => {
     setEditingAnnotationId(null);
     setSelectedPoint(null);
+    setDraftStroke([]);
     setCategory(CATEGORY_OPTIONS[0]);
     setValue('');
     setUnit(UNIT_OPTIONS[0]);
@@ -151,7 +255,7 @@ export default function HomePage() {
       try {
         ensurePromiseWithResolversPolyfill();
         const { pdfjs } = await import('react-pdf');
-        pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs?v=4.8.69';
+        pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
         if (mounted) {
           setIsPdfReady(true);
         }
@@ -168,16 +272,25 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
+    let frameId = 0;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? 920;
-      setPdfWidth(Math.max(360, Math.floor(width - 48)));
+      const nextWidth = Math.max(360, Math.round(width - 48));
+
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(() => {
+        setPdfWidth((prev) => (Math.abs(prev - nextWidth) < 2 ? prev : nextWidth));
+      });
     });
 
     if (viewerRef.current) {
       observer.observe(viewerRef.current);
     }
 
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(frameId);
+      observer.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -194,43 +307,147 @@ export default function HomePage() {
     })();
   }, [loadData]);
 
+  useEffect(() => {
+    if (drawMode === 'point') {
+      setDraftStroke([]);
+    } else {
+      setSelectedPoint(null);
+    }
+  }, [drawMode]);
+
+  const toNormalizedPoint = (event: React.PointerEvent<HTMLDivElement | HTMLButtonElement>): StrokePoint => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = clamp01((event.clientX - rect.left) / rect.width);
+    const y = clamp01((event.clientY - rect.top) / rect.height);
+    return { x, y };
+  };
+
   const handlePdfClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    const y = (event.clientY - rect.top) / rect.height;
+    const x = clamp01((event.clientX - rect.left) / rect.width);
+    const y = clamp01((event.clientY - rect.top) / rect.height);
 
     setSelectedPoint({ page: 1, x, y });
     setErrorMessage(null);
   };
 
+  const handlePenPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (drawMode !== 'pen') {
+      return;
+    }
+
+    isPenDrawingRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const point = toNormalizedPoint(event);
+    setDraftStroke([point]);
+    setSelectedPoint({ page: 1, x: point.x, y: point.y });
+    setErrorMessage(null);
+  };
+
+  const handlePenPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPenDrawingRef.current || drawMode !== 'pen') {
+      return;
+    }
+
+    const nextPoint = toNormalizedPoint(event);
+    setDraftStroke((prev) => {
+      if (prev.length === 0) {
+        return [nextPoint];
+      }
+
+      const last = prev[prev.length - 1];
+      const distance = Math.hypot(last.x - nextPoint.x, last.y - nextPoint.y);
+      if (distance < 0.003) {
+        return prev;
+      }
+
+      return [...prev, nextPoint];
+    });
+  };
+
+  const handlePenPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPenDrawingRef.current || drawMode !== 'pen') {
+      return;
+    }
+
+    isPenDrawingRef.current = false;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    const endPoint = toNormalizedPoint(event);
+    setDraftStroke((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (!last || Math.hypot(last.x - endPoint.x, last.y - endPoint.y) >= 0.003) {
+        next.push(endPoint);
+      }
+
+      const lastPoint = getStrokeLastPoint(next);
+      if (lastPoint) {
+        setSelectedPoint({ page: 1, x: lastPoint.x, y: lastPoint.y });
+      }
+      return next;
+    });
+  };
+
+  const handlePenPointerCancel = () => {
+    isPenDrawingRef.current = false;
+  };
+
   const handleMarkerSelect = (annotation: Annotation) => {
+    const annotationMode = annotation.mode === 'stroke' ? 'pen' : 'point';
     const nextCategory = CATEGORY_OPTIONS.includes(annotation.category as Category)
       ? (annotation.category as Category)
       : CATEGORY_OPTIONS[0];
     const nextUnit = UNIT_OPTIONS.includes(annotation.unit as Unit) ? (annotation.unit as Unit) : UNIT_OPTIONS[0];
+    const strokePoints = annotationMode === 'pen' ? parseStrokePoints(annotation.points) : [];
+    const strokeLastPoint = getStrokeLastPoint(strokePoints);
 
     setEditingAnnotationId(annotation.id);
+    setDrawMode(annotationMode);
     setCategory(nextCategory);
     setUnit(nextUnit);
     setValue(String(annotation.value));
     setComment(annotation.comment ?? '');
-    setSelectedPoint({
-      page: annotation.page,
-      x: annotation.x,
-      y: annotation.y
-    });
+    setDraftStroke(strokePoints);
+    setSelectedPoint(
+      annotationMode === 'pen' && strokeLastPoint
+        ? { page: annotation.page, x: strokeLastPoint.x, y: strokeLastPoint.y }
+        : {
+            page: annotation.page,
+            x: annotation.x,
+            y: annotation.y
+          }
+    );
     setErrorMessage(null);
   };
 
   const handleSave = async () => {
-    if (!selectedPoint) {
-      setErrorMessage('PDF上で位置を選択してください。');
-      return;
-    }
-
     const parsedValue = Number(value);
     if (!Number.isFinite(parsedValue)) {
       setErrorMessage('数値を入力してください。');
+      return;
+    }
+
+    let payloadPoint: SelectedPoint | null = selectedPoint;
+    let payloadPoints: string | null = null;
+    const payloadMode = drawMode === 'pen' ? 'stroke' : 'point';
+
+    if (drawMode === 'pen') {
+      if (draftStroke.length < 2) {
+        setErrorMessage('ペンモードではドラッグして線を描いてください。');
+        return;
+      }
+
+      const lastPoint = getStrokeLastPoint(draftStroke);
+      if (!lastPoint) {
+        setErrorMessage('描画データの取得に失敗しました。');
+        return;
+      }
+
+      payloadPoint = { page: 1, x: lastPoint.x, y: lastPoint.y };
+      payloadPoints = JSON.stringify(draftStroke);
+    } else if (!payloadPoint) {
+      setErrorMessage('PDF上で位置を選択してください。');
       return;
     }
 
@@ -245,7 +462,9 @@ export default function HomePage() {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...selectedPoint,
+          ...payloadPoint,
+          mode: payloadMode,
+          points: payloadPoints,
           value: parsedValue,
           unit,
           category,
@@ -306,41 +525,65 @@ export default function HomePage() {
       <div className="mx-auto grid max-w-[1600px] gap-4 lg:grid-cols-[1fr_360px]">
         <section className="rounded-2xl border border-slate-300 bg-white p-4 shadow-sm">
           <h1 className="mb-3 text-lg font-semibold">PDFビュー</h1>
-          <div ref={viewerRef} className="h-[75vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div
+            ref={viewerRef}
+            className="h-[75vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4"
+            style={{ scrollbarGutter: 'stable both-edges' }}
+          >
             <div className="relative mx-auto" style={{ width: pdfWidth, height: pdfHeight }}>
-              {isPdfReady ? (
-                <PdfDocument
-                  file={PDF_FILE}
-                  loading={<p className="text-sm text-slate-600">PDFを読み込み中...</p>}
-                  error={<p className="text-sm text-rose-600">PDFの読み込みに失敗しました。</p>}
-                >
-                  <PdfPage
-                    pageNumber={1}
-                    width={pdfWidth}
-                    renderAnnotationLayer={false}
-                    renderTextLayer={false}
-                    onLoadSuccess={(page: any) => {
-                      const viewport = page.getViewport({ scale: 1 });
-                      setBaseSize({ width: viewport.width, height: viewport.height });
-                    }}
-                  />
-                </PdfDocument>
-              ) : (
-                <p className="text-sm text-slate-600">PDFライブラリを初期化中...</p>
-              )}
+              <MemoizedPdfLayer isPdfReady={isPdfReady} pdfWidth={pdfWidth} onLoadSuccess={handlePdfPageLoadSuccess} />
 
-              <button
-                type="button"
-                className="absolute inset-0 z-0 cursor-crosshair bg-transparent"
-                onClick={handlePdfClick}
-                aria-label="PDF上の位置を選択"
-              />
+              <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
+                {savedStrokes.map((stroke) => (
+                  <polyline
+                    key={`stroke-${stroke.id}`}
+                    points={stroke.points.map((point) => `${point.x * pdfWidth},${point.y * pdfHeight}`).join(' ')}
+                    fill="none"
+                    stroke={getCategoryColor(stroke.category)}
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+                {drawMode === 'pen' && draftStroke.length >= 2 && (
+                  <polyline
+                    points={draftStroke.map((point) => `${point.x * pdfWidth},${point.y * pdfHeight}`).join(' ')}
+                    fill="none"
+                    stroke={selectedCategoryColor}
+                    strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="4 3"
+                  />
+                )}
+              </svg>
+
+              {drawMode === 'point' ? (
+                <button
+                  type="button"
+                  className="absolute inset-0 z-0 cursor-crosshair bg-transparent"
+                  onClick={handlePdfClick}
+                  aria-label="PDF上の位置を選択"
+                />
+              ) : (
+                <div
+                  className="absolute inset-0 z-0 cursor-crosshair bg-transparent touch-none"
+                  onPointerDown={handlePenPointerDown}
+                  onPointerMove={handlePenPointerMove}
+                  onPointerUp={handlePenPointerUp}
+                  onPointerCancel={handlePenPointerCancel}
+                />
+              )}
 
               {annotations.map((item) => {
                 const markerColor = getCategoryColor(item.category);
                 const isEditing = item.id === editingAnnotationId;
+                const strokePoints = item.mode === 'stroke' ? parseStrokePoints(item.points) : [];
+                const strokeLastPoint = item.mode === 'stroke' ? getStrokeLastPoint(strokePoints) : null;
+                const markerX = strokeLastPoint?.x ?? item.x;
+                const markerY = strokeLastPoint?.y ?? item.y;
                 return (
-                  <div key={item.id} className={`absolute ${isEditing ? 'z-20' : 'z-10'}`} style={{ left: `${item.x * 100}%`, top: `${item.y * 100}%` }}>
+                  <div key={item.id} className={`absolute ${isEditing ? 'z-20' : 'z-10'}`} style={{ left: `${markerX * 100}%`, top: `${markerY * 100}%` }}>
                     <button
                       type="button"
                       className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2"
@@ -351,14 +594,14 @@ export default function HomePage() {
                       aria-label={`マーカー${item.id}`}
                     >
                       <div
-                        className={`h-3 w-3 rounded-full border border-white shadow ${isEditing ? 'ring-2 ring-slate-900/40' : ''}`}
+                        className={`rounded-full border border-white shadow ${item.mode === 'stroke' ? 'h-2.5 w-2.5' : 'h-3 w-3'} ${isEditing ? 'ring-2 ring-slate-900/40' : ''}`}
                         style={{ backgroundColor: markerColor }}
                       />
                     </button>
 
                     <button
                       type="button"
-                      className="pointer-events-auto absolute left-2 top-2 w-[100px] max-w-[100px] break-words rounded border px-1.5 py-0.5 text-left text-[10px] leading-tight text-slate-800"
+                      className="pointer-events-auto absolute left-3 top-3 w-[100px] max-w-[100px] break-words rounded border px-1.5 py-0.5 text-left text-[10px] leading-tight text-slate-800"
                       style={{
                         borderColor: markerColor,
                         backgroundColor: `${markerColor}22`
@@ -408,6 +651,26 @@ export default function HomePage() {
                   </button>
                 </div>
               )}
+
+              <div>
+                <label className="mb-1 block font-medium">入力モード</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className={`rounded-lg border px-3 py-2 ${drawMode === 'point' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+                    onClick={() => setDrawMode('point')}
+                  >
+                    点
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded-lg border px-3 py-2 ${drawMode === 'pen' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+                    onClick={() => setDrawMode('pen')}
+                  >
+                    ペン
+                  </button>
+                </div>
+              </div>
 
               <div>
                 <label className="mb-1 block font-medium">カテゴリ</label>
@@ -468,11 +731,17 @@ export default function HomePage() {
               <div className="rounded-lg bg-slate-100 p-2 text-xs text-slate-700">
                 {selectedPoint
                   ? isEditMode
-                    ? `編集中の位置: page ${selectedPoint.page}, x=${selectedPoint.x.toFixed(3)}, y=${selectedPoint.y.toFixed(3)}（PDFをクリックで移動）`
+                    ? drawMode === 'pen'
+                      ? `編集中の位置: page ${selectedPoint.page}, x=${selectedPoint.x.toFixed(3)}, y=${selectedPoint.y.toFixed(3)}（ドラッグで線を再描画）`
+                      : `編集中の位置: page ${selectedPoint.page}, x=${selectedPoint.x.toFixed(3)}, y=${selectedPoint.y.toFixed(3)}（PDFをクリックで移動）`
                     : `選択位置: page ${selectedPoint.page}, x=${selectedPoint.x.toFixed(3)}, y=${selectedPoint.y.toFixed(3)}`
                   : isEditMode
-                    ? 'PDF上をクリックして編集中マーカーの位置を更新してください。'
-                    : 'PDF上をクリックして位置を選択してください。'}
+                    ? drawMode === 'pen'
+                      ? 'PDF上をドラッグして編集中の線を更新してください。'
+                      : 'PDF上をクリックして編集中マーカーの位置を更新してください。'
+                    : drawMode === 'pen'
+                      ? 'PDF上をドラッグして線を描いてください。'
+                      : 'PDF上をクリックして位置を選択してください。'}
               </div>
 
               <div className="grid grid-cols-2 gap-2">

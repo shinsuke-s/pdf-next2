@@ -12,6 +12,8 @@ model Annotation {
   page      Int
   x         Float
   y         Float
+  mode      String   @default("point")
+  points    String?
   value     Float
   unit      String
   category  String

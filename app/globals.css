@@ -9,3 +9,7 @@
 body {
   @apply bg-slate-100 text-slate-900 antialiased;
 }
+
+.react-pdf__Page__canvas {
+  display: block;
+}
