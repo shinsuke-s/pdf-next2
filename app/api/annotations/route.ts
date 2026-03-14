@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ensureAnnotationTable, prisma } from '@/lib/prisma';
+import { createAnnotation, listAnnotations } from '@/lib/annotation-repository';
 import { CATEGORY_OPTIONS, UNIT_OPTIONS } from '@/lib/constants';
 
 export const runtime = 'nodejs';
@@ -44,11 +44,7 @@ const parseStrokePoints = (raw: unknown): DrawPoint[] | null => {
 };
 
 export async function GET() {
-  await ensureAnnotationTable();
-
-  const annotations = await prisma.annotation.findMany({
-    orderBy: [{ createdAt: 'asc' }]
-  });
+  const annotations = await listAnnotations();
 
   return NextResponse.json(annotations, {
     headers: { 'Cache-Control': 'no-store' }
@@ -56,8 +52,6 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  await ensureAnnotationTable();
-
   try {
     const body = await request.json();
     const page = Number(body.page);
@@ -83,8 +77,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid value' }, { status: 400 });
     }
 
-    if (mode === 'point' && ![xRaw, yRaw].every((item) => Number.isFinite(item))) {
-      return NextResponse.json({ error: 'Invalid point coordinates' }, { status: 400 });
+    if (![xRaw, yRaw].every((item) => Number.isFinite(item))) {
+      return NextResponse.json({ error: 'Invalid coordinates' }, { status: 400 });
+    }
+
+    if (![xRaw, yRaw].every((item) => item >= 0 && item <= 1)) {
+      return NextResponse.json({ error: 'Coordinates must be between 0 and 1' }, { status: 400 });
     }
 
     if (mode === 'stroke' && !parsedStroke) {
@@ -99,26 +97,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid unit' }, { status: 400 });
     }
 
-    const [x, y] =
-      mode === 'stroke' && parsedStroke
-        ? [
-            parsedStroke.reduce((sum, p) => sum + p.x, 0) / parsedStroke.length,
-            parsedStroke.reduce((sum, p) => sum + p.y, 0) / parsedStroke.length
-          ]
-        : [xRaw, yRaw];
-
-    const annotation = await prisma.annotation.create({
-      data: {
-        page,
-        x,
-        y,
-        mode: mode as DrawMode,
-        points: mode === 'stroke' && parsedStroke ? JSON.stringify(parsedStroke) : null,
-        value,
-        unit,
-        category,
-        comment
-      }
+    const annotation = await createAnnotation({
+      page,
+      x: xRaw,
+      y: yRaw,
+      mode: mode as DrawMode,
+      points: mode === 'stroke' && parsedStroke ? JSON.stringify(parsedStroke) : null,
+      value,
+      unit,
+      category,
+      comment
     });
 
     return NextResponse.json(annotation, { status: 201 });

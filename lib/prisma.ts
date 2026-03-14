@@ -48,6 +48,17 @@ export async function ensureAnnotationTable() {
     } catch {
       // Already exists
     }
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "AnnotationEvent" (
+        "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+        "annotationId" INTEGER,
+        "action" TEXT NOT NULL,
+        "beforeData" TEXT,
+        "afterData" TEXT,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   })();
 
   try {
