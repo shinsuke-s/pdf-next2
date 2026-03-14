@@ -7,7 +7,11 @@ services:
     command: sh -c "npm install && npm run db:push && npm run dev -- --hostname 0.0.0.0 --port 3000"
     environment:
       NODE_ENV: development
-      DATABASE_URL: file:./prisma/dev.db
+      DATABASE_URL: ${DATABASE_URL:-file:./prisma/dev.db}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_ANNOTATIONS_TABLE: ${SUPABASE_ANNOTATIONS_TABLE:-annotations}
+      SUPABASE_ANNOTATION_EVENTS_TABLE: ${SUPABASE_ANNOTATION_EVENTS_TABLE:-annotation_events}
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
       NEXT_TELEMETRY_DISABLED: "1"
