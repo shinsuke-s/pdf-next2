@@ -44,6 +44,7 @@ SUPABASE_ANNOTATION_EVENTS_TABLE="annotation_events"
 - `DELETE /api/annotations/:id` 注釈削除
 - `GET /api/summary` カテゴリ別集計
 - `GET /api/history?limit=50` 編集履歴（create/update/delete）
+- `GET /api/debug/db` 現在の接続モード確認（supabase / sqlite_fallback）
 
 ## Supabase セットアップ（推奨）
 
